@@ -1,0 +1,25 @@
+#include <stdio.h> 
+#include <stdlib.h> 
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
+ 
+
+int main(void){
+	
+	int height=3;
+	int width=3;
+	int channels=3;
+
+	
+	unsigned char* img = stbi_load("data/puppy.jpg", &width, &height, &channels,4);
+
+	if (img==NULL){
+		printf("Error in loading image \n");
+		exit(1);
+	}
+	
+	printf("Loaded stb_image");
+
+}

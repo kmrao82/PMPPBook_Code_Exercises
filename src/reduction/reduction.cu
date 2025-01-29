@@ -4,8 +4,8 @@
 #include <vector>
 #include <cstdlib>
 
-
-#define BLOCK_DIM 1024
+#define BLOCK_DIM 512
+#define COARSE_FACTOR 1
 
 using namespace std;
 
@@ -24,6 +24,66 @@ __global__ void reduce_kernel(float* input, float* partialSums, unsigned int N){
 		partialSums[blockIdx.x] = input[i];
 	}
 }
+
+__global__ void reduce_kernel_controldiv(float* input, float* partialSums, unsigned int N){
+	unsigned int segment =blockIdx.x * blockDim.x *2;
+	unsigned int i = segment + threadIdx.x;
+	for(unsigned int stride = BLOCK_DIM; stride >0;stride /=2){
+		if(threadIdx.x < stride)
+		{
+			input[i] +=input[i+stride];
+		}
+		__syncthreads();
+	}
+	if(threadIdx.x==0){
+		partialSums[blockIdx.x] = input[i];
+	}
+}
+
+__global__ void reduce_kernel_sharedmem(float* input, float* partialSums, unsigned int N){
+	unsigned int segment =blockIdx.x * blockDim.x *2;
+	unsigned int i = segment + threadIdx.x;
+	__shared__ float input_s[BLOCK_DIM];
+	input_s[threadIdx.x] = input[i] + input[i+BLOCK_DIM];
+	__syncthreads();
+	for(unsigned int stride = BLOCK_DIM/2; stride >0; stride /=2){
+		if(threadIdx.x < stride)
+		{
+			input_s[threadIdx.x] +=input_s[threadIdx.x+stride];
+		}
+		__syncthreads();
+	}
+	if(threadIdx.x==0){
+		partialSums[blockIdx.x] = input_s[threadIdx.x];
+	}
+}
+
+__global__ void reduce_kernel_sharedmem_coarsefactor(float* input, float* partialSums, unsigned int N){
+	unsigned int segment =blockIdx.x * blockDim.x *2 * COARSE_FACTOR;
+	unsigned int i = segment + threadIdx.x;
+	__shared__ float input_s[BLOCK_DIM];
+	float sum=0.0f;
+	for(unsigned int tile = 0;tile < COARSE_FACTOR*2; tile++)
+	{
+		sum += input[i + tile*BLOCK_DIM];
+	}
+
+	input_s[threadIdx.x]=sum;
+	__syncthreads();
+
+	for(unsigned int stride = BLOCK_DIM/2; stride >0; stride /=2){
+		if(threadIdx.x < stride)
+		{
+			input_s[threadIdx.x] +=input_s[threadIdx.x+stride];
+		}
+		__syncthreads();
+	}
+	if(threadIdx.x==0){
+		partialSums[blockIdx.x] = input_s[threadIdx.x];
+	}
+}
+
+
 
 
 float reduce_gpu(float* input, unsigned int N){
@@ -44,7 +104,8 @@ float reduce_gpu(float* input, unsigned int N){
 	
 	//Allocate partial sums
 	const unsigned int numThreadsPerBlock = BLOCK_DIM;
-	const unsigned int numElementsPerBlock = 2*numThreadsPerBlock;
+	//const unsigned int numElementsPerBlock = 2*numThreadsPerBlock*COARSE_FACTOR;
+	const unsigned int numElementsPerBlock = numThreadsPerBlock/4 * COARSE_FACTOR;
 	const unsigned int numBlocks = (N + numElementsPerBlock -1)/numElementsPerBlock;
 	float* partialSums = (float*) malloc(numBlocks*sizeof(float));
 
@@ -53,9 +114,17 @@ float reduce_gpu(float* input, unsigned int N){
 	
 
 	//Call kernel 
-	reduce_kernel<<< numBlocks, numThreadsPerBlock >>>(input_d, partialSums_d, N);
-	cudaDeviceSynchronize();
+//	reduce_kernel<<< numBlocks, numThreadsPerBlock >>>(input_d, partialSums_d, N);
+//	cudaDeviceSynchronize();
 	
+	//reduce_kernel_controldiv<<< numBlocks, numThreadsPerBlock >>>(input_d, partialSums_d, N);
+	//cudaDeviceSynchronize();
+
+	//reduce_kernel_sharedmem<<< numBlocks, numThreadsPerBlock >>>(input_d, partialSums_d, N);
+	//cudaDeviceSynchronize();
+
+	reduce_kernel_sharedmem_coarsefactor<<< numBlocks, numThreadsPerBlock >>>(input_d, partialSums_d, N);
+	cudaDeviceSynchronize();
 
 	//Copy data from GPU
 	cudaMemcpy(partialSums, partialSums_d, numBlocks*sizeof(float), cudaMemcpyDeviceToHost);
@@ -78,7 +147,7 @@ float reduce_gpu(float* input, unsigned int N){
 }
 
 int main(){
-	int arraySize=2048;
+	int arraySize=65536;
 	float a[arraySize];
 	srand(time(0));
 	float totalSum;
